@@ -21,3 +21,4 @@ web-sys = { version = "0.3", features = [ 'Document', 'Element', 'HtmlCanvasElem
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 env_logger = "0.11"
+pollster = "0.3"

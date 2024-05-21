@@ -11,7 +11,7 @@ Run as a desktop app:
 > cargo run --bin desktop
 ```
 
-To show logging output on `windows` use:
+To show all crate logging output on `windows` use:
 ```
 > set RUST_LOG=wasm_winit_wgpu
 ```
