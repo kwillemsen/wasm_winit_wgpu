@@ -88,7 +88,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -122,13 +122,10 @@ pub mod wasm {
         console_log::init_with_level(log::Level::Debug)
             .expect("console_log::init_with_level() failed");
         log::info!("entering wasm_main() at {}...", system_now());
-
         let event_loop = log_result!(EventLoop::new());
         event_loop.set_control_flow(ControlFlow::Wait);
-
         use winit::platform::web::EventLoopExtWebSys;
         event_loop.spawn_app(App::new());
-
         log::info!("...exiting wasm_main() at {}", system_now());
         Ok(())
     }
@@ -140,6 +137,10 @@ pub mod not_wasm {
     pub fn desktop_main() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
         log::info!("entering desktop_main() at {}...", system_now());
+        let event_loop = log_result!(EventLoop::new());
+        event_loop.set_control_flow(ControlFlow::Wait);
+        let mut app = App::new();
+        log_result!(event_loop.run_app(&mut app));
         log::info!("...exiting desktop_main() at {}", system_now());
         Ok(())
     }
