@@ -17,6 +17,16 @@ pub mod wasm {
         let val = document.create_element("p")?;
         val.set_inner_html("Hello from Rust!");
         body.append_child(&val)?;
+
+        let canvas = document
+            .get_element_by_id("rust_canvas")
+            .expect("let canvas = document.get_element_by_id(\"rust_canvas\") failed");
+        log::info!("let canvas = document.get_element_by_id(\"rust_canvas\") succeeded");
+        let canvas: web_sys::HtmlCanvasElement = canvas
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() failed");
+        log::info!("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() succeeded");
+
         log::info!("...exiting main()");
         Ok(())
     }

@@ -11,6 +11,11 @@ Run as a desktop app:
 > cargo run --bin desktop
 ```
 
+To show logging output on `windows` use:
+```
+> set RUST_LOG=wasm_winit_wgpu
+```
+
 Build as `wasm` and host using miniserve:
 ```
 > wasm-pack build --target web
