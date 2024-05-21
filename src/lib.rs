@@ -2,6 +2,7 @@
 pub mod wasm {
     use wasm_bindgen::prelude::*;
 
+    #[wasm_bindgen(start)]
     pub fn main() -> Result<(), JsValue> {
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
         console_log::init_with_level(log::Level::Debug)
@@ -31,19 +32,15 @@ pub mod wasm {
         Ok(())
     }
 }
+
 #[cfg(not(target_family = "wasm"))]
 pub mod not_wasm {
     pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
-        log::info!("main() started on desktop");
+        log::info!("entering main()...");
+        log::info!("...exiting main()");
         Ok(())
     }
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn main() -> Result<(), wasm_bindgen::JsValue> {
-    wasm::main()
 }
 
 #[cfg(not(target_family = "wasm"))]
