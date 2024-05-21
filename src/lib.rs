@@ -17,13 +17,6 @@ pub mod wasm {
         log::info!("let window = web_sys::window() succeeded");
         let document = window.document().expect("window.document() failed");
         log::info!("let document = window.document() succeeded");
-        let body = document.body().expect("document.body() failed");
-        log::info!("let body = document.body() succeeded");
-        // Manufacture the element we're gonna append
-        let val = document.create_element("p")?;
-        val.set_inner_html("Hello from Rust!");
-        body.append_child(&val)?;
-
         let canvas = document
             .get_element_by_id("rust_canvas")
             .expect("let canvas = document.get_element_by_id(\"rust_canvas\") failed");
@@ -32,7 +25,6 @@ pub mod wasm {
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .expect("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() failed");
         log::info!("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() succeeded");
-
         log::info!("...exiting wasm_main() at {}", system_now());
         Ok(())
     }
