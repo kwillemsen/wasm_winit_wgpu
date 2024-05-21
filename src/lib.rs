@@ -6,9 +6,10 @@ fn system_now() -> String {
 pub mod wasm {
     use super::*;
     use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::*;
 
     #[wasm_bindgen(start)]
-    pub fn wasm_main() -> Result<(), JsValue> {
+    pub async fn wasm_main() -> Result<(), JsValue> {
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
         console_log::init_with_level(log::Level::Debug)
             .expect("console_log::init_with_level() failed");
