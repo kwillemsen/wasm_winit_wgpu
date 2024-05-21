@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use wgpu::*;
-use winit::{application::*, event::*, event_loop::*, window::*};
+use winit::{application::*, dpi::PhysicalSize, event::*, event_loop::*, window::*};
 
 //
 // Irrelevant utility shizzle
@@ -52,9 +52,64 @@ fn system_now() -> String {
 // Relevant code starts here!
 //
 
+const SWAPCHAIN_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
+
+struct SurfaceState {
+    window: Arc<Window>,
+    surface: Surface<'static>,
+    size: PhysicalSize<u32>,
+}
+impl SurfaceState {
+    fn new(instance: &Instance, window: Arc<Window>) -> Self {
+        let surface = log_result!(instance.create_surface(window.clone()));
+        Self::from_existing(window, surface)
+    }
+    fn from_existing(window: Arc<Window>, surface: Surface<'static>) -> Self {
+        Self {
+            window,
+            surface,
+            size: PhysicalSize::new(0, 0),
+        }
+    }
+    fn configure(&mut self, device: &Device) -> bool {
+        let size = self.window.inner_size();
+        let is_ready = size.width > 0 && size.height > 0;
+        if is_ready && self.size != size {
+            self.surface.configure(
+                device,
+                &SurfaceConfiguration {
+                    usage: TextureUsages::RENDER_ATTACHMENT,
+                    format: SWAPCHAIN_FORMAT,
+                    width: size.width,
+                    height: size.height,
+                    present_mode: PresentMode::AutoVsync,
+                    desired_maximum_frame_latency: 2,
+                    alpha_mode: CompositeAlphaMode::Auto,
+                    view_formats: Vec::new(),
+                },
+            );
+        }
+        self.size = size;
+        is_ready
+    }
+    fn current_texture(&mut self, device: &Device) -> Option<SurfaceTexture> {
+        if self.configure(device) {
+            match self.surface.get_current_texture() {
+                Ok(surface_texture) => Some(surface_texture),
+                Err(SurfaceError::OutOfMemory) => panic!("SurfaceError::OutOfMemory"),
+                _ => {
+                    self.size = PhysicalSize::new(0, 0);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+}
+
 struct GpuState {
     instance: Instance,
-    adapter: Adapter,
     device: Device,
     queue: Queue,
 }
@@ -69,9 +124,9 @@ impl GpuState {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn from_window(window: Arc<Window>) -> (Self, Surface<'static>) {
+    fn from_window(window: Arc<Window>) -> (Self, SurfaceState) {
         let instance = Self::instance();
-        let surface = log_result!(instance.create_surface(window));
+        let surface = log_result!(instance.create_surface(window.clone()));
         let adapter = log_result!(pollster::block_on(instance.request_adapter(
             &RequestAdapterOptions {
                 power_preference: PowerPreference::HighPerformance,
@@ -89,11 +144,10 @@ impl GpuState {
         )));
         let gpu_state = Self {
             instance,
-            adapter,
             device,
             queue,
         };
-        (gpu_state, surface)
+        (gpu_state, SurfaceState::from_existing(window, surface))
     }
 
     #[cfg(target_family = "wasm")]
@@ -122,22 +176,22 @@ impl GpuState {
         );
         Self {
             instance,
-            adapter,
             device,
             queue,
         }
     }
 
-    fn create_surface(&self, window: Arc<Window>) -> Surface<'static> {
-        log_result!(self.instance.create_surface(window))
+    fn create_surface(&self, window: Arc<Window>) -> SurfaceState {
+        SurfaceState::new(&self.instance, window)
     }
 }
 
 #[derive(Default)]
 struct App {
     window: Option<Arc<winit::window::Window>>,
-    surface: Option<Surface<'static>>,
+    surface: Option<SurfaceState>,
     gpu_state: Option<GpuState>,
+    start_millis: i64,
 }
 impl App {
     #[cfg(target_family = "wasm")]
@@ -158,7 +212,27 @@ impl App {
     }
 
     fn new() -> Self {
-        Self::default()
+        Self {
+            window: None,
+            surface: None,
+            gpu_state: None,
+            start_millis: chrono::Local::now().timestamp_millis(),
+        }
+    }
+
+    fn current_color(&self) -> Color {
+        use palette::{FromColor, Hsl, Srgb};
+        let millis = (chrono::Local::now().timestamp_millis() - self.start_millis).abs();
+        let t = (millis % 5000) as f64 / 5000.0;
+        let hue = (360.0 * t) as f32;
+        let hsl = Hsl::new(hue, 0.5, 0.5);
+        let rgb: Srgb = Srgb::from_color(hsl);
+        Color {
+            r: rgb.red as f64,
+            g: rgb.green as f64,
+            b: rgb.blue as f64,
+            a: 1.0,
+        }
     }
 
     #[cfg(target_family = "wasm")]
@@ -223,7 +297,45 @@ impl ApplicationHandler for App {
                 log::debug!("WindowEvent::Destroyed");
             }
             WE::RedrawRequested => {
-                if let Some(window) = &self.window {
+                if let (Some(window), Some(surface_state), Some(gpu_state)) =
+                    (&self.window, &mut self.surface, &self.gpu_state)
+                {
+                    if let Some(surface_texture) = surface_state.current_texture(&gpu_state.device)
+                    {
+                        let view = surface_texture.texture.create_view(&TextureViewDescriptor {
+                            label: None,
+                            format: Some(SWAPCHAIN_FORMAT),
+                            dimension: Some(TextureViewDimension::D2),
+                            aspect: TextureAspect::All,
+                            base_mip_level: 0,
+                            mip_level_count: Some(1),
+                            base_array_layer: 0,
+                            array_layer_count: Some(1),
+                        });
+                        let mut encoder = gpu_state
+                            .device
+                            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+                        {
+                            let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                                label: None,
+                                color_attachments: &[Some(RenderPassColorAttachment {
+                                    view: &view,
+                                    resolve_target: None,
+                                    ops: Operations {
+                                        load: LoadOp::Clear(self.current_color()),
+                                        store: StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        }
+                        let command_buffer = encoder.finish();
+                        gpu_state.queue.submit(std::iter::once(command_buffer));
+                        drop(view);
+                        surface_texture.present();
+                    }
                     window.request_redraw();
                 }
             }

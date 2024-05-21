@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 chrono = "0.4"
 log = "0.4"
+palette = "0.7"
 wgpu = "0.20"
 winit = "0.30"
 
