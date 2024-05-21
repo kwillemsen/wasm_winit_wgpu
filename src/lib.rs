@@ -1,5 +1,113 @@
+use std::sync::Arc;
+use winit::{application::*, event::*, event_loop::*, window::*};
+
+//
+// Irrelevant utility shizzle
+//
+
+mod fallible_stmt_detail {
+    pub trait LogResult {
+        type Result;
+        fn log_result(self, msg: &str) -> Self::Result;
+    }
+    impl<T, E: std::fmt::Debug> LogResult for Result<T, E> {
+        type Result = T;
+        fn log_result(self, msg: &str) -> Self::Result {
+            match self {
+                Ok(x) => {
+                    log::info!("{msg} succeeded ({}:{})", file!(), line!());
+                    x
+                }
+                Err(err) => {
+                    log::error!("{msg} failed: {err:?} ({}:{})", file!(), line!());
+                    panic!("panic!() caused by unexpected (and unhandled) error: {err:?}");
+                }
+            }
+        }
+    }
+    impl<T> LogResult for Option<T> {
+        type Result = T;
+        fn log_result(self, msg: &str) -> Self::Result {
+            if let Some(x) = self {
+                log::info!("{msg} succeeded ({}:{})", file!(), line!());
+                x
+            } else {
+                log::error!("{msg} returned `None` ({}:{})", file!(), line!());
+                panic!("panic!() caused by unexpected (and unhandled) None");
+            }
+        }
+    }
+}
+
+macro_rules! log_result {
+    ($e:expr) => {{
+        use $crate::fallible_stmt_detail::LogResult;
+        $e.log_result(stringify!($e))
+    }};
+}
+
 fn system_now() -> String {
     chrono::Local::now().to_rfc3339()
+}
+
+//
+// Relevant code starts here!
+//
+
+#[derive(Default)]
+struct App {
+    window: Option<Arc<winit::window::Window>>,
+}
+impl App {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn create_window(event_loop: &ActiveEventLoop) -> Window {
+        use wasm_bindgen::prelude::*;
+        let window = log_result!(web_sys::window());
+        let document = log_result!(window.document());
+        let canvas = log_result!(document.get_element_by_id("rust_canvas"));
+        let canvas: web_sys::HtmlCanvasElement =
+            log_result!(canvas.dyn_into::<web_sys::HtmlCanvasElement>());
+        use winit::platform::web::WindowAttributesExtWebSys;
+        log_result!(event_loop.create_window(Window::default_attributes().with_canvas(Some(canvas))))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn create_window(event_loop: &ActiveEventLoop) -> Window {
+        log_result!(event_loop.create_window(Window::default_attributes()))
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            self.window = Some(Arc::new(Self::create_window(event_loop)));
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::Resized(client_area) => {
+                log::info!(
+                    "WindowEvent::Resized : width = {}, height = {}",
+                    client_area.width,
+                    client_area.height
+                );
+            }
+            _ => (),
+        }
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -14,18 +122,13 @@ pub mod wasm {
         console_log::init_with_level(log::Level::Debug)
             .expect("console_log::init_with_level() failed");
         log::info!("entering wasm_main() at {}...", system_now());
-        let window = web_sys::window().expect("web_sys::window() failed");
-        log::info!("let window = web_sys::window() succeeded");
-        let document = window.document().expect("window.document() failed");
-        log::info!("let document = window.document() succeeded");
-        let canvas = document
-            .get_element_by_id("rust_canvas")
-            .expect("let canvas = document.get_element_by_id(\"rust_canvas\") failed");
-        log::info!("let canvas = document.get_element_by_id(\"rust_canvas\") succeeded");
-        let _canvas: web_sys::HtmlCanvasElement = canvas
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() failed");
-        log::info!("let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>() succeeded");
+
+        let event_loop = log_result!(EventLoop::new());
+        event_loop.set_control_flow(ControlFlow::Wait);
+
+        use winit::platform::web::EventLoopExtWebSys;
+        event_loop.spawn_app(App::new());
+
         log::info!("...exiting wasm_main() at {}", system_now());
         Ok(())
     }
