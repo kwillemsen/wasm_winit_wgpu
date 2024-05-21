@@ -83,9 +83,14 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        log::info!("ApplicationHandler::resumed() for App");
         if self.window.is_none() {
             self.window = Some(Arc::new(Self::create_window(event_loop)));
         }
+    }
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        log::info!("ApplicationHandler::suspended() for App");
+        self.window = None;
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
