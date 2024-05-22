@@ -52,6 +52,32 @@ fn system_now() -> String {
 // Relevant code starts here!
 //
 
+struct FileIoManager {
+    files: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+}
+impl FileIoManager {
+    fn new() -> Self {
+        Self {
+            files: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+    fn add_file(&self, name: &str, bytes: Vec<u8>) {
+        let mut files = log_result!(self.files.lock());
+        files.push((name.to_string(), bytes));
+    }
+    fn extract_files(&self) -> Option<Vec<(String, Vec<u8>)>> {
+        let mut files = log_result!(self.files.lock());
+        if files.is_empty() {
+            None
+        } else {
+            let mut extracted_files = Vec::new();
+            std::mem::swap(files.as_mut(), &mut extracted_files);
+            assert!(files.is_empty());
+            Some(extracted_files)
+        }
+    }
+}
+
 const SWAPCHAIN_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
 
 struct SurfaceState {
@@ -274,6 +300,7 @@ struct UiState {
     num_clicks: usize,
     checked: bool,
     num_checks: usize,
+    dropped_files: Vec<(String, Vec<u8>, usize)>,
 }
 impl UiState {
     fn new() -> Self {
@@ -281,6 +308,7 @@ impl UiState {
             num_clicks: 0,
             checked: false,
             num_checks: 0,
+            dropped_files: Vec::new(),
         }
     }
     fn run_egui(&mut self, ctx: &egui::Context) {
@@ -320,11 +348,29 @@ impl UiState {
                     "The checkbox has been checked {} time(s)",
                     self.num_checks
                 ));
+
+                if !self.dropped_files.is_empty() {
+                    egui::Grid::new("dropped files").show(ui, |ui| {
+                        ui.label("filename");
+                        ui.label("size (bytes)");
+                        ui.end_row();
+                        for (name, _bytes, sum) in &self.dropped_files {
+                            ui.label(name.as_str());
+                            ui.label(format!("{}", *sum));
+                            ui.end_row();
+                        }
+                    });
+                }
             });
+    }
+    fn drop_file(&mut self, name: String, bytes: Vec<u8>) {
+        let sum: usize = bytes.iter().map(|b| *b as usize).sum();
+        self.dropped_files.push((name, bytes, sum));
     }
 }
 
 struct App {
+    file_io_manager: Arc<FileIoManager>,
     window: Option<Arc<winit::window::Window>>,
     surface: Option<SurfaceState>,
     gpu_state: Option<GpuState>,
@@ -352,6 +398,7 @@ impl App {
 
     fn new() -> Self {
         Self {
+            file_io_manager: Arc::new(FileIoManager::new()),
             window: None,
             surface: None,
             gpu_state: None,
@@ -359,6 +406,10 @@ impl App {
             ui_state: UiState::new(),
             start_millis: chrono::Local::now().timestamp_millis(),
         }
+    }
+
+    fn clone_file_io_manager(&self) -> Arc<FileIoManager> {
+        self.file_io_manager.clone()
     }
 
     fn current_color(&self) -> Color {
@@ -441,8 +492,13 @@ impl ApplicationHandler for App {
                 log::debug!("WindowEvent::Destroyed");
             }
             WE::DroppedFile(path) => {
-                let bytes = log_result!(std::fs::read(path));
+                let bytes = log_result!(std::fs::read(&path));
+                let name = log_result!(path.into_os_string().into_string());
                 on_file_drop(&bytes);
+                self.ui_state.drop_file(name, bytes);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             WE::RedrawRequested => {
                 if let (Some(window), Some(surface_state), Some(gpu_state)) =
@@ -524,8 +580,21 @@ pub mod wasm {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::*;
 
+    #[wasm_bindgen]
+    struct FileIoJsContext {
+        mgr: Arc<FileIoManager>,
+    }
+    impl FileIoJsContext {
+        #[wasm_bindgen]
+        pub fn duplicate(&self) -> Self {
+            Self {
+                mgr: self.mgr.clone(),
+            }
+        }
+    }
+
     #[wasm_bindgen(start)]
-    pub async fn wasm_main() -> Result<(), JsValue> {
+    pub async fn wasm_main() -> Result<FileIoJsContext, JsValue> {
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
         console_log::init_with_level(log::Level::Debug)
             .expect("console_log::init_with_level() failed");
@@ -534,14 +603,15 @@ pub mod wasm {
         event_loop.set_control_flow(ControlFlow::Wait);
         use winit::platform::web::EventLoopExtWebSys;
         let mut app = App::new();
+        let mgr = app.clone_file_io_manager();
         app.init_wasm_gpu().await;
         event_loop.spawn_app(app);
         log::info!("...exiting wasm_main() at {}", system_now());
-        Ok(())
+        Ok(FileIoJsContext { mgr })
     }
 
     #[wasm_bindgen]
-    pub fn on_file_drop(bytes: &[u8]) {
+    pub fn on_file_drop(name: &str, bytes: &[u8]) {
         super::on_file_drop(bytes);
     }
 }
