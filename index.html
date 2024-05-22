@@ -5,7 +5,47 @@
   <body>
     <canvas id="rust_canvas" style="width: 100%; height: 100%"></canvas>
     <script type="module">
-      import init from './pkg/wasm_winit_wgpu.js';
+      import init, { on_file_drop } from './pkg/wasm_winit_wgpu.js';
+
+      function readFile(file) {
+        const reader = new FileReader();
+        reader.addEventListener('load', (event) => {
+          on_file_drop(new Uint8Array(reader.result));
+        });
+        reader.readAsArrayBuffer(file);
+      }
+      
+      //const dropArea = document.getElementById("rust_canvas");
+      const dropArea = document.body;
+      dropArea.addEventListener('dragover', (event) => {
+        console.log("File(s) in drop zone");
+        // Prevent default behavior (Prevent file from being opened)
+        event.stopPropagation();
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      });
+      dropArea.addEventListener('drop', (event) => {
+        console.log("File(s) dropped");
+        event.stopPropagation();
+        event.preventDefault();
+        if (event.dataTransfer.items) {
+          // Use DataTransferItemList interface to access the file(s)
+          [...event.dataTransfer.items].forEach((item, i) => {
+            // If dropped items aren't files, reject them
+            if (item.kind === "file") {
+              const file = item.getAsFile();
+              console.log(`… file[${i}].name = ${file.name}`);
+              readFile(file);
+            }
+          });
+        } else {
+          // Use DataTransfer interface to access the file(s)
+          [...event.dataTransfer.files].forEach((file, i) => {
+            console.log(`… file[${i}].name = ${file.name}`);
+            readFile(file);
+          });
+        }
+      });
 
       async function run() {
         await init();

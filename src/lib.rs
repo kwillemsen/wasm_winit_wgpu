@@ -296,6 +296,10 @@ impl ApplicationHandler for App {
             WE::Destroyed => {
                 log::debug!("WindowEvent::Destroyed");
             }
+            WE::DroppedFile(path) => {
+                let bytes = log_result!(std::fs::read(path));
+                on_file_drop(&bytes);
+            }
             WE::RedrawRequested => {
                 if let (Some(window), Some(surface_state), Some(gpu_state)) =
                     (&self.window, &mut self.surface, &self.gpu_state)
@@ -372,6 +376,17 @@ pub mod wasm {
         log::info!("...exiting wasm_main() at {}", system_now());
         Ok(())
     }
+
+    #[wasm_bindgen]
+    pub fn on_file_drop(bytes: &[u8]) {
+        super::on_file_drop(bytes);
+    }
+}
+
+pub fn on_file_drop(bytes: &[u8]) {
+    let num_bytes = bytes.len();
+    let sum: usize = bytes.iter().map(|b| *b as usize).sum();
+    log::info!("on_file_drop(bytes) - bytes.len() = {num_bytes} - sum of all bytes: {sum}");
 }
 
 #[cfg(not(target_family = "wasm"))]

@@ -8,6 +8,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chrono = "0.4"
+egui = { git = "https://github.com/AndriBaal/egui.git", branch = "winit-0.30" }
+egui-wgpu = { git = "https://github.com/AndriBaal/egui.git", branch = "winit-0.30" }
+egui-winit = { git = "https://github.com/AndriBaal/egui.git", branch = "winit-0.30", default-features = false, features = ["links", "wayland", "x11"] }
 log = "0.4"
 palette = "0.7"
 wgpu = "0.20"
