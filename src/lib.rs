@@ -186,11 +186,150 @@ impl GpuState {
     }
 }
 
-#[derive(Default)]
+pub struct EguiState {
+    pub context: egui::Context,
+    state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
+}
+
+impl EguiState {
+    pub fn new(device: &Device, window: &Window) -> Self {
+        use egui::*;
+        use egui_wgpu::*;
+        use egui_winit::*;
+        let context = Context::default();
+        let viewport_id = ViewportId::ROOT;
+        let native_pixels_per_point = Some(window.scale_factor() as f32);
+        let max_texture_side = device.limits().max_texture_dimension_2d.min(2048);
+        let max_texture_side = Some(max_texture_side as usize);
+        let state = State::new(
+            context.clone(),
+            viewport_id,
+            &window,
+            native_pixels_per_point,
+            max_texture_side,
+        );
+        let renderer = Renderer::new(device, SWAPCHAIN_FORMAT, None, 1);
+
+        Self {
+            context,
+            state,
+            renderer,
+        }
+    }
+
+    pub fn handle_input(&mut self, window: &Window, event: &WindowEvent) {
+        let _ = self.state.on_window_event(window, event);
+    }
+
+    pub fn draw(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        window: &Window,
+        window_surface_view: &TextureView,
+        screen_descriptor: egui_wgpu::ScreenDescriptor,
+        run_ui: impl FnOnce(&egui::Context),
+    ) {
+        let raw_input = self.state.take_egui_input(&window);
+        let full_output = self.context.run(raw_input, |ui| {
+            run_ui(ui);
+        });
+        self.state
+            .handle_platform_output(window, full_output.platform_output);
+        let pixels_per_point = window.scale_factor() as f32;
+        let tris = self
+            .context
+            .tessellate(full_output.shapes, pixels_per_point);
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.renderer
+                .update_texture(&device, &queue, *id, &image_delta);
+        }
+        self.renderer
+            .update_buffers(&device, &queue, encoder, &tris, &screen_descriptor);
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("egui RenderPass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &window_surface_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.renderer.render(&mut rpass, &tris, &screen_descriptor);
+        drop(rpass);
+        for x in &full_output.textures_delta.free {
+            self.renderer.free_texture(x)
+        }
+    }
+}
+
+struct UiState {
+    num_clicks: usize,
+    checked: bool,
+    num_checks: usize,
+}
+impl UiState {
+    fn new() -> Self {
+        Self {
+            num_clicks: 0,
+            checked: false,
+            num_checks: 0,
+        }
+    }
+    fn run_egui(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Test egui window")
+            .resizable([true, true])
+            .show(ctx, |ui| {
+                let button_text = match self.num_clicks {
+                    0 => "I dare you! I double-dare you!".to_string(),
+                    1 => "Oo-ooh! Now you've done it!".to_string(),
+                    2 => "Oo-ooh! Now you've done it! Twice! >:[".to_string(),
+                    _ => format!(
+                        "Oo-ooh! Now you've done it! {} times already... m(_ _)m",
+                        self.num_clicks
+                    ),
+                };
+                if ui.button(button_text).clicked() {
+                    self.num_clicks += 1;
+                }
+                if self.num_clicks > 0 {
+                    ui.label(format!(
+                        "You've clicked the button {} time(s)",
+                        self.num_clicks
+                    ));
+                }
+                if ui.checkbox(&mut self.checked, "Some checkbox").changed() {
+                    if self.checked {
+                        self.num_checks += 1;
+                    }
+                }
+                let label_text = if self.checked {
+                    "The checkbox *is* checked"
+                } else {
+                    "The checkbox is *not* checked"
+                };
+                ui.label(label_text);
+                ui.label(format!(
+                    "The checkbox has been checked {} time(s)",
+                    self.num_checks
+                ));
+            });
+    }
+}
+
 struct App {
     window: Option<Arc<winit::window::Window>>,
     surface: Option<SurfaceState>,
     gpu_state: Option<GpuState>,
+    egui_state: Option<EguiState>,
+    ui_state: UiState,
     start_millis: i64,
 }
 impl App {
@@ -216,6 +355,8 @@ impl App {
             window: None,
             surface: None,
             gpu_state: None,
+            egui_state: None,
+            ui_state: UiState::new(),
             start_millis: chrono::Local::now().timestamp_millis(),
         }
     }
@@ -287,6 +428,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let (Some(egui_state), Some(window)) = (&mut self.egui_state, &self.window) {
+            egui_state.handle_input(&window, &event);
+        }
         use WindowEvent as WE;
         match event {
             WE::CloseRequested => {
@@ -335,6 +479,25 @@ impl ApplicationHandler for App {
                                 occlusion_query_set: None,
                             });
                         }
+
+                        let egui_state = self
+                            .egui_state
+                            .get_or_insert_with(|| EguiState::new(&gpu_state.device, &window));
+                        let size = window.inner_size();
+                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                            size_in_pixels: [size.width, size.height],
+                            pixels_per_point: window.scale_factor() as f32,
+                        };
+                        egui_state.draw(
+                            &gpu_state.device,
+                            &gpu_state.queue,
+                            &mut encoder,
+                            &window,
+                            &view,
+                            screen_descriptor,
+                            |ctx| self.ui_state.run_egui(ctx),
+                        );
+
                         let command_buffer = encoder.finish();
                         gpu_state.queue.submit(std::iter::once(command_buffer));
                         drop(view);
