@@ -52,29 +52,26 @@ fn system_now() -> String {
 // Relevant code starts here!
 //
 
-struct FileIoManager {
-    files: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+struct DroppedFile {
+    name: String,
+    bytes: Vec<u8>,
 }
-impl FileIoManager {
-    fn new() -> Self {
+impl DroppedFile {
+    #[allow(dead_code)]
+    fn new(name: &str, bytes: &[u8]) -> Self {
         Self {
-            files: std::sync::Mutex::new(Vec::new()),
+            name: name.to_string(),
+            bytes: bytes.iter().copied().collect(),
         }
     }
-    fn add_file(&self, name: &str, bytes: Vec<u8>) {
-        let mut files = log_result!(self.files.lock());
-        files.push((name.to_string(), bytes));
-    }
-    fn extract_files(&self) -> Option<Vec<(String, Vec<u8>)>> {
-        let mut files = log_result!(self.files.lock());
-        if files.is_empty() {
-            None
-        } else {
-            let mut extracted_files = Vec::new();
-            std::mem::swap(files.as_mut(), &mut extracted_files);
-            assert!(files.is_empty());
-            Some(extracted_files)
-        }
+}
+
+enum UserEvent {
+    OnFileDropped(DroppedFile),
+}
+impl From<DroppedFile> for UserEvent {
+    fn from(value: DroppedFile) -> Self {
+        Self::OnFileDropped(value)
     }
 }
 
@@ -149,7 +146,7 @@ impl GpuState {
         })
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[allow(dead_code)]
     fn from_window(window: Arc<Window>) -> (Self, SurfaceState) {
         let instance = Self::instance();
         let surface = log_result!(instance.create_surface(window.clone()));
@@ -176,8 +173,8 @@ impl GpuState {
         (gpu_state, SurfaceState::from_existing(window, surface))
     }
 
-    #[cfg(target_family = "wasm")]
-    async fn from_wasm() -> Self {
+    #[allow(dead_code)]
+    async fn init_async() -> Self {
         let instance = Self::instance();
         let adapter = log_result!(
             instance
@@ -370,7 +367,6 @@ impl UiState {
 }
 
 struct App {
-    file_io_manager: Arc<FileIoManager>,
     window: Option<Arc<winit::window::Window>>,
     surface: Option<SurfaceState>,
     gpu_state: Option<GpuState>,
@@ -398,7 +394,6 @@ impl App {
 
     fn new() -> Self {
         Self {
-            file_io_manager: Arc::new(FileIoManager::new()),
             window: None,
             surface: None,
             gpu_state: None,
@@ -406,10 +401,6 @@ impl App {
             ui_state: UiState::new(),
             start_millis: chrono::Local::now().timestamp_millis(),
         }
-    }
-
-    fn clone_file_io_manager(&self) -> Arc<FileIoManager> {
-        self.file_io_manager.clone()
     }
 
     fn current_color(&self) -> Color {
@@ -427,9 +418,9 @@ impl App {
         }
     }
 
-    #[cfg(target_family = "wasm")]
-    async fn init_wasm_gpu(&mut self) {
-        self.gpu_state = Some(GpuState::from_wasm().await)
+    #[allow(dead_code)]
+    async fn init_async(&mut self) {
+        self.gpu_state = Some(GpuState::init_async().await)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -461,9 +452,17 @@ impl App {
             }
         }
     }
+
+    fn on_file_dropped(&mut self, dropped_file: DroppedFile) {
+        self.ui_state
+            .drop_file(dropped_file.name, dropped_file.bytes);
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // This method is called eg. when the application starts, when the user
         // browses 'back' to the webpage, when the OS resumes the application...
@@ -493,12 +492,10 @@ impl ApplicationHandler for App {
             }
             WE::DroppedFile(path) => {
                 let bytes = log_result!(std::fs::read(&path));
-                let name = log_result!(path.into_os_string().into_string());
-                on_file_drop(&bytes);
-                self.ui_state.drop_file(name, bytes);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.on_file_dropped(DroppedFile {
+                    name: log_result!(path.into_os_string().into_string()),
+                    bytes,
+                });
             }
             WE::RedrawRequested => {
                 if let (Some(window), Some(surface_state), Some(gpu_state)) =
@@ -572,6 +569,16 @@ impl ApplicationHandler for App {
             _ => (),
         }
     }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        use UserEvent as UE;
+        match event {
+            UE::OnFileDropped(dropped_file) => {
+                self.ui_state
+                    .drop_file(dropped_file.name, dropped_file.bytes);
+            }
+        }
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -581,45 +588,47 @@ pub mod wasm {
     use wasm_bindgen_futures::*;
 
     #[wasm_bindgen]
-    struct FileIoJsContext {
-        mgr: Arc<FileIoManager>,
+    pub struct UserEventManager {
+        event_loop: EventLoopProxy<UserEvent>,
     }
-    impl FileIoJsContext {
-        #[wasm_bindgen]
-        pub fn duplicate(&self) -> Self {
-            Self {
-                mgr: self.mgr.clone(),
-            }
+    impl UserEventManager {
+        fn new(event_loop: EventLoopProxy<UserEvent>) -> Self {
+            Self { event_loop }
+        }
+        fn on_file_dropped(&self, name: &str, bytes: &[u8]) {
+            let _ = self
+                .event_loop
+                .send_event(DroppedFile::new(name, bytes).into());
         }
     }
 
     #[wasm_bindgen(start)]
-    pub async fn wasm_main() -> Result<FileIoJsContext, JsValue> {
+    pub async fn wasm_main() -> Result<(), JsValue> {
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
         console_log::init_with_level(log::Level::Debug)
             .expect("console_log::init_with_level() failed");
-        log::info!("entering wasm_main() at {}...", system_now());
-        let event_loop = log_result!(EventLoop::new());
-        event_loop.set_control_flow(ControlFlow::Wait);
-        use winit::platform::web::EventLoopExtWebSys;
-        let mut app = App::new();
-        let mgr = app.clone_file_io_manager();
-        app.init_wasm_gpu().await;
-        event_loop.spawn_app(app);
-        log::info!("...exiting wasm_main() at {}", system_now());
-        Ok(FileIoJsContext { mgr })
+        log::info!("running wasm_main() at {}...", system_now());
+        Ok(())
     }
 
     #[wasm_bindgen]
-    pub fn on_file_drop(name: &str, bytes: &[u8]) {
-        super::on_file_drop(bytes);
+    pub async fn run_app() -> UserEventManager {
+        log::info!("entering run_app() at {}...", system_now());
+        let event_loop = log_result!(EventLoop::<UserEvent>::with_user_event().build());
+        event_loop.set_control_flow(ControlFlow::Wait);
+        let user_event_mgr = UserEventManager::new(event_loop.create_proxy());
+        use winit::platform::web::EventLoopExtWebSys;
+        let mut app = App::new();
+        app.init_async().await;
+        event_loop.spawn_app(app);
+        log::info!("...exiting run_app() at {}", system_now());
+        user_event_mgr
     }
-}
 
-pub fn on_file_drop(bytes: &[u8]) {
-    let num_bytes = bytes.len();
-    let sum: usize = bytes.iter().map(|b| *b as usize).sum();
-    log::info!("on_file_drop(bytes) - bytes.len() = {num_bytes} - sum of all bytes: {sum}");
+    #[wasm_bindgen]
+    pub fn on_file_drop(mgr: &UserEventManager, name: &str, bytes: &[u8]) {
+        mgr.on_file_dropped(name, bytes);
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -628,7 +637,7 @@ pub mod not_wasm {
     pub fn desktop_main() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
         log::info!("entering desktop_main() at {}...", system_now());
-        let event_loop = log_result!(EventLoop::new());
+        let event_loop = log_result!(EventLoop::<UserEvent>::with_user_event().build());
         event_loop.set_control_flow(ControlFlow::Wait);
         let mut app = App::new();
         log_result!(event_loop.run_app(&mut app));
