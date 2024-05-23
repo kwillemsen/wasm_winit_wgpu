@@ -131,6 +131,18 @@ impl SurfaceState {
     }
 }
 
+fn log_adapter_info(adapter: &Adapter) {
+    let AdapterInfo {
+        name,
+        device_type,
+        backend,
+        ..
+    } = adapter.get_info();
+    let features = adapter.features();
+    let limits = adapter.limits();
+    log::info!("adapter: {name} - {device_type:?} - {backend:?}\nfeatures: {features:?}\nlimits: {limits:?}");
+}
+
 struct GpuState {
     instance: Instance,
     device: Device,
@@ -157,6 +169,7 @@ impl GpuState {
                 compatible_surface: Some(&surface),
             }
         )));
+        log_adapter_info(&adapter);
         let (device, queue) = log_result!(pollster::block_on(adapter.request_device(
             &DeviceDescriptor {
                 label: None,
@@ -185,6 +198,7 @@ impl GpuState {
                 })
                 .await
         );
+        log_adapter_info(&adapter);
         let (device, queue) = log_result!(
             adapter
                 .request_device(
